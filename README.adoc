@@ -1,0 +1,225 @@
+= Base de Datos 1: Trabajo Practico N° 1
+Fernando Martin Trejo <fernandotrejo125@gmail.com>; Matias Sosa Garcia <mati.g.q.ms@gmail.com>; Esteban Ezequiel Lucero <este.lucero2212@gmail.com>
+v1, {2023-06-15}. Docentes Daniel Bertaccini y Hernán Rondelli (COM-01)
+:title-page:
+:numbered:
+:source-highlighter: coderay
+:tabsize: 4
+
+== Introducción
+Este proyecto se desarrollo con el fin de proveer un sistema de base de datos en el cual se van a generar turnos que van a poder ser reservados por diferentes pacientes dependiendo de la obra social. No obstante, dicho sistema  se encarga de poder generar una liquidación mensual a las diferentes obras sociales y también poder enviar mails a los diferentes pacientes a partir de los diferentes estados del turno.
+
+
+//Descripción del trabajo práctico. Aquí se puede copiar textual el [ó
+//parte del] enunciado del trabajo práctico de considerarse necesario.
+
+== Descripción
+
+
+Para  desenvolvernos en este proyecto decidimos no solo realizar los procedimientos y los triggers en un archivo PostgreSQL separado, sino también optamos por guardar la creación de tablas y la generación de datos en dos archivos diferentes de PostgreSQL para que el archivo llamado main.go no este sobrecargado de código y sea más sencillo de leer.
+
+Por otro lado, en el siguiente apartado podremos observar las diferentes problemáticas y soluciones que tuvimos en el recorrido del trabajo. 
+
+
+//En esta sección pueden incluirse las dificultades que tuvieron, las
+//soluciones encontradas, las decisiones que se fueron tomando a lo largo
+//del trabajo práctico, y las cuestiones de diseño que consideren
+//importantes.
+
+//También, se puede incluir una descripción general del programa—cómo
+//funciona.
+
+Problemas: ::
+1. El primer problema con el que nos encontramos fue que teníamos un error con la FK de obra social y la FK de afiliado, ya que no habíamos creado la PK de afiliado.
+
+2. El segundo problema que tuvimos fue como borrar las PK y FK, ya que no nos dejaba borrar todas de una sola vez, solo podíamos borrar de a un registro.
+
+3. Tuvimos problemas con el horario ya que cuando convertíamos con to_timestamp,  agarraba la zona horaria, de esto nos dimos usando el raise, y lo resolvimos usando ::timestamp without time zone.
+
+4. Tuvimos problemas también a la hora ingresar datos, ya que no nos tomaba los saltos de linea, entonces nos omitía datos a ingresar, lo pudimos solucionar sin problemas.
+
+
+5. Otro problema que nos surgió fue que nos confundimos con el tipo de representación del campo día en la tabla agenda, ya que pensábamos que el día era del mes y no de la semana, y cuando tratamos de cambiar el código antes hecho usamos como primera opción el generate_series para generar una serie de fechas y después iterarlas, pero esto no resulto, por lo tanto, como solución decidimos iterar a partir de sumar intervalos a los días hasta llegar al fin del mes y verificar si el día del mes correspondía con el día de la semana de la agenda del medique.
+
+6. El mayor problema que nos encontramos fue a la hora de crear los triggers que se basaban en fechas ya que al investigar los triggers no detectan eventos de cambio de hora/fecha, solo si  ocurren eventos en tablas.Para solucionar esto no utilizamos triggers en los dos últimos apartados del último punto sino que implementamos en el archivo main.go que revise siempre ,mientras se corre el programa, si se cambia de dia y si es asi se ejecutan los procedimientos correspondientes a el envió de mail para recordatorios y perdidas de turnos.
+
+== Implementación
+
+
+Para comenzar esta sección primero hablaremos de como creamos el archivo main.go para así que se pueda ejecutar la creación de tablas, el ingreso de datos, la llamada de stored procedures y triggers. 
+La primera instrucción que ejecuta el main son la conexión a la base de datos de PostgreSQL para así después poder borrar, si existe, la base de datos llamada tp y crearla de nuevo. 
+
+Una vez creada la base de datos tp decidimos ejecutar los archivos donde se encuentran los datos, tablas, stored procedures de PostgreSQL y a continuación llamamos a la función menú que imprime por pantalla un menú, con 7 opciones, para que el usuario pueda decidir que acciones tomar sobre la base de datos. 
+Cabe aclarar que cuando el usuario elige una opción se van a tomar valores que están predeterminados ya sea en las tablas de la base de datos o en el archivo main.go. 
+
+A continuación, vamos a dar una breve explicación de cómo se realizaron y como funcionan los diferentes stored procedures en el archivo function.sql.
+
+Stored Procedures::
+
+El primer stored procedure que encontramos es  *generación_turnos_disponibles*: 
+
+.Firma y declaración de variables de procedimiento generacion_turnos_disponibles
+[source, sql]
+----
+create function generacion_turnos_disponibles(anio int, mes int) returns boolean as $$
+declare
+    fila_agenda agenda%rowtype;
+    dia int;
+    fecha_pasada timestamp;
+    hora time;
+    existe int;
+    dia_actual date;
+    dia_final date;
+----
+
+Este stored procedure es un booleano que toma como parámetro dos enteros que son el año y el mes en los que se quieren generar cada turno a partir de la agenda del medique.
+Dentro de las variables declaradas las mas importantes son dia que representa el dia de la semana que atiende el medique, dia_actual cuyo valor es el primer día del mes y año pasados como parámetros y el dia_final que representa el último día del mes pasado como parámetro. 
+
+
+.Obtencion del ultimo día del mes para recorrer el mes
+[source, sql]
+----
+    dia_actual := to_date(anio||'-'||mes||'-01', 'YYYY-MM-DD');
+    dia_final := (dia_actual + interval '1 month') - interval '1 day';
+----
+
+Con estas dos variables podemos recorrer un mes para asi poder verificar si el medique atiende esa dia de la fecha y asi insertar la misma con sus horarios disponibles
+
+.Comprobación para saber si el medique atiende ese día del mes
+[source, sql]
+----
+        if EXTRACT(dow from dia_actual)::int = dia then
+                hora := fila_agenda.hora_desde;   
+----
+Este código se encarga de poder reconocer si el dia_actual, el cual es una date, es correspondiente al dia de la semana que atiende el medique y en caso que sea afirmativo la condición se cargan los turnos a la tabla con sus fecha e intervalo.
+
+El segundo stored procedure que realizamos es *reserva_turno*:
+
+Reserva_turno recibe como parámetro, un numero de historia clínica, un dni de paciente, una fecha y una hora para luego poder actualizarlos en la tabla turno.Dicho procedure antes de cargar el turno como reservado verifica que el dni del medique sea valido, el nro de historia clínica del paciente exista, que el medique atienda la obra social del paciente, que el turno exista y por ultimo si el paciente supera la cantidad de 5 turnos reservados.En caso de que algunas de estas condiciones no se cumplan el turno no va a ser reservado y se va a cargar un registro para saber el tipo de error que se tuvo en el intento de reserva de dicho turno.
+Al final de este procedure se verifica si hubo algún inconveniente en la transacción y si esto es asi se realiza un rollback para poder mantener los datos de la tabla de manera consistente.
+
+
+El tercer stored procedure corresponde a *atender_turno*:
+
+Este procedure recibe por parámetro un int que representa el numero de turno el cual pasa por tres verificaciones las cuales comprueban si el turno existe, esta reservado y si la fecha del turno corresponde a la fecha actual.En caso de que se logre pasar todas las verificaciones se va a cambiar el estado del registro ,en la tabla turno, de 'reservado' a 'atendido'.En caso contrario, que el turno no logre pasar las verificaciones para crear un turno se va a crear un registro en la tabla error para tener un detalle del error.
+
+El tercer stored procedure que realizamos es *cancelar_turno*:
+
+Este otro stored procedure recibe como parámetro el dni del médico, una fecha_desde en formato date y otra fecha_hasta también en formato date, estas dos fechas son el intervalo de tiempo donde se cancelan los turnos. Este método devuelve un int que son la cantidad de filas que se cancelaron.
+
+.Selección de las filas que van a ser modificadas a canceladas
+[source, sql]
+----
+for fila_turno in select * from turno where 
+turno.dni_medique=dni_medique_entrada and 
+(turno.estado='disponible' or turno.estado='reservado') and 
+turno.fecha between fecha_desde and fecha_hasta   
+loop
+--Se Inserta registro dentro de la tabla reprogramacion y se cambia el estado del turnos
+end loop;
+
+----
+
+Cancelar_turnos itera unicamente las filas dentro de la tabla turno los cuales cumple la condición de que tengan el dni del medique que pasaron como parámetro, el turno se encuentre en estado disponible o reservado y la fecha se encuentre dentro de las fechas pasadas como parámetro. 
+
+Cabe aclarar que una vez cancelado el turno pasa a cambiar su estado a cancelado.
+
+
+
+El cuarto stored procedure refiere a *liquidacion_obra_social*:
+
+Dicho stored procedure recibe por parámetros 2 fechas, una fecha desde y otra hasta que especifican desde el rango de tiempo del cual se realizara la liquidación de la obra social. 
+
+Dentro del procedure se realiza un loop en el que al principio creamos una nueva entrada en liquidacion_cabecera y almacenamos el id de la cabecera ,en la variable liquidacion_cabecera_id, para cada obra social registrada en la tabla obra_social.
+
+.Segundo loop dentro de la iteración de las obras sociales 
+[source,sql]
+----
+for fila_datos in select turno.fecha turno_fecha,
+			paciente.nro_afiliade paciente_nro_afiliade,
+			paciente.dni_paciente paciente_dni,
+			paciente.nombre paciente_nombre,
+			paciente.apellido paciente_apellido,
+			medique.dni_medique medique_dni,
+			medique.nombre medique_nombre,
+			medique.apellido medique_apellido,
+			medique.especialidad medique_especialidad,
+			turno.monto_obra_social turno_monto_obra_social,
+			turno.nro_turno turno_nro_turno
+		from turno,paciente,medique 
+		where nro_obra_social_consulta = fila_obra_social.nro_obra_social and 
+		estado = 'atendido' and paciente.nro_paciente=turno.nro_paciente 
+		and medique.dni_medique=turno.dni_medique  
+		and fecha between desde_date 
+		and hasta_date  
+		loop
+
+            --Agregamos registro dentro de liquidacion_detalle  
+            -- Cambiar estado a liquidado del turno
+            
+        end loop;
+----
+
+Luego en el segundo for iteramos las filas del producto cartesiano de las tablas 'turno','paciente' y 'medique' verificando que el numero de obra social corresponda al mismo numero de obra social pasada como parámetro, que el estado del turno este atendido, que el numero de paciente de la tabla paciente sea el correspondiente el de la tabla turnos y que el dni del medique de la tabla medique sea igual al dni del medique del turno.Estas condiciones lo realizamos asi podemos llenar  los campos de la tabla liquidacion_detalle de manera correcta y poder actualizar el estado del turno a liquidado.
+
+
+El quinto stored procedure que realizamos es *envio_email_recordatorio*:
+
+Este stored procedure devuelve void y no recibe nada como parámetro ya que está diseñada para enviar recordatorios a pacientes que tengan turnos reservados para los próximos dos días, esta función está ejecutándose en todo momento en main.go,siempre y cuando se mantenga el programa ejecutándose, como podemos observar en el proximo apartado.
+
+.Código dentro de main.go que verifica si se cambio de dia y si es asi se ejecutan los procedures correspondientes
+[source, go]
+----
+if dia.Format("2006-01-02") != time.Now().Format("2006-01-02") {
+	dia = time.Now()
+	envioMailPerdidaTurno(db)
+	envioMailRecordatorio(db)
+
+}
+----
+
+
+En el siguiente código se puede ver como se utiliza la función date_trunc la cual “trunca” el día para que solo se compare ese día sin tener en cuenta la hora y los segundos, los pacientes que cumplen la condiciones where se agregan a turno_fila para luego poder usar esos datos e insertarlos en la tabla envio_email.
+
+.Código para verificar que faltan al menos dos días para que se llegue a la fecha del turno
+[source, sql]
+----
+for turno_fila in select * from turno,paciente where    date_trunc('day',turno.fecha) <= date_trunc('day',CURRENT_DATE + interval '2 day') and date_trunc('day',turno.fecha) > date_trunc('day',CURRENT_DATE ) and turno.nro_paciente=paciente.nro_paciente and turno.estado='reservado' loop  
+----
+
+
+
+El sexto stored procedure que realizamos es *envio_email_perdida_turno*:
+
+Al igual que el anterior stored procedure no recibe nada como parámetro ni retorna nada, ya que se busca a las personas que perdieron su turno reservado.
+De forma similar al anterior procedure  verifica si el turno estaba reservado y si la fecha del turno esta un dia atrasado. 
+
+
+Triggers::
+
+En este apartado explicaremos la implementación, el único trigger que desarrollamos en este proyecto.
+Dicho trigger se dispara en caso de que la tabla turno sea actualizada ejecutando el procedure envio_emails. Este procedure verifica si la tabla turno actualizo el campo estado ha reservado o cancelado, ya que si es así se va a insertar dentro de la tabla, envio_email un registro para generar un mail con la confirmación de su turno, el turno u otro registro para informar al paciente que se ha cancelado su turno.
+
+.Verificación de cambio del campo estado para la correcta inserción del registro dentro de la tabla envio_email
+[source, sql]
+----
+	if NEW.estado = 'reservado' then
+	--Codigo para inserción del registro
+	end if;
+	if  NEW.estado = 'cancelado' and OLD.estado ='reservado' then
+	--Codigo para inserción del registro
+	end if;
+----
+
+En este código podemos ver como a partir del NEW.estado si se ha actualizado el estado de la tabla turno ha reservado porque de ser así agregaríamos un registro a la tabla envio_email para generarle el recordatorio al paciente. En caso de que el estado al que se cambió no sea reservado, entonces verificaremos si el campo estado se cambió de reservado a cancelado para así generar un registro en envio_email con un email para informar el paciente de lo sucedido. 
+
+
+BOLD DB::
+
+Lo primero que hicimos fue definir la estructura en Go de las tablas Paciente, Medique,Consultorio, ObraSocial y Turno.Para representar los registros vamos a tener slices de cada estructura en particular que lo representa.
+
+Una vez hecho esto proseguimos a generar un bucket de bytes por cada tipo de tabla donde se van a guardar los diferentes registros que van transformarse a formato JSon, mediante el método  Marshal.
+
+== Conclusiones
+
+En general nos pareció que este proyecto una gran forma de empezar a adentrarnos al mundo de las bases de datos debido que fue un trabajo muy completo el cual nos ayudó a tener una mejor comprensión sobre los pilares de este area, ya que va abarca desde la creación de la base de datos hasta temas más complejos como pueden ser STORED PROCEDURES y TRIGGERS. Aunque tuvimos nuestras complicaciones pudimos seguir adelante buscando información en la documentación oficial de PSQL o de GO. 
