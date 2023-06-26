@@ -188,7 +188,6 @@ for turno_fila in select * from turno,paciente where    date_trunc('day',turno.f
 ----
 
 
-
 El sexto stored procedure que realizamos es *envio_email_perdida_turno*:
 
 Al igual que el anterior stored procedure no recibe nada como parámetro ni retorna nada, ya que se busca a las personas que perdieron su turno reservado.
